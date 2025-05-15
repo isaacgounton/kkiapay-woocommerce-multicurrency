@@ -240,12 +240,17 @@ class WC_Kkiapay_Gateway extends WC_Payment_Gateway
      * @return void
      */
     /**
-     * Get USD to XOF exchange rate
+     * Get exchange rate from any currency to XOF
      * 
+     * @param string $from_currency Source currency code
      * @return float|null Exchange rate or null if failed
      */
-    private function get_usd_to_xof_rate() {
-        $rate = get_transient('kkiapay_usd_xof_rate');
+    private function get_exchange_rate_to_xof($from_currency) {
+        if ($from_currency === 'XOF') {
+            return 1;
+        }
+
+        $rate = get_transient("kkiapay_{$from_currency}_xof_rate");
         
         if ($rate === false) {
             $api_key = $this->get_option('exchangerate_api_key');
@@ -253,7 +258,7 @@ class WC_Kkiapay_Gateway extends WC_Payment_Gateway
                 return null;
             }
 
-            $url = "https://v6.exchangerate-api.com/v6/{$api_key}/latest/USD";
+            $url = "https://v6.exchangerate-api.com/v6/{$api_key}/latest/{$from_currency}";
             $response = wp_remote_get($url);
 
             if (is_wp_error($response)) {
@@ -266,7 +271,7 @@ class WC_Kkiapay_Gateway extends WC_Payment_Gateway
             if (!empty($data->conversion_rates->XOF)) {
                 $rate = $data->conversion_rates->XOF;
                 // Cache rate for 1 hour
-                set_transient('kkiapay_usd_xof_rate', $rate, HOUR_IN_SECONDS);
+                set_transient("kkiapay_{$from_currency}_xof_rate", $rate, HOUR_IN_SECONDS);
                 return $rate;
             }
             return null;
@@ -281,9 +286,9 @@ class WC_Kkiapay_Gateway extends WC_Payment_Gateway
             $amount = $order->get_total();
             $currency = get_woocommerce_currency();
             
-            // Convert to XOF if currency is USD
-            if ($currency === 'USD') {
-                $rate = $this->get_usd_to_xof_rate();
+            // Convert to XOF if currency is not XOF
+            if ($currency !== 'XOF') {
+                $rate = $this->get_exchange_rate_to_xof($currency);
                 if ($rate) {
                     $amount = $amount * $rate;
                 }
@@ -363,24 +368,17 @@ class WC_Kkiapay_Gateway extends WC_Payment_Gateway
                 $order_total = $order->get_total();
                 
                 // Convert order total to XOF if needed
-                if ($currency === 'USD') {
-                    $rate = $this->get_usd_to_xof_rate();
+                if ($currency !== 'XOF') {
+                    $rate = $this->get_exchange_rate_to_xof($currency);
                     if ($rate) {
                         $order_total = $order_total * $rate;
                     }
                 }
 
                 // Validate the payment amount with 5% tolerance for exchange rate fluctuations
-                if ($currency === 'USD') {
-                    $min_amount = $order_total * 0.95; // 5% lower tolerance
-                    $max_amount = $order_total * 1.05; // 5% upper tolerance
-                    if ($response->amount < $min_amount || $response->amount > $max_amount) {
-                        if ($order) {
-                            $this->handlePaymentFailed($order);
-                        }
-                        return;
-                    }
-                } else if ($response->amount < $order_total) {
+                $min_amount = $order_total * 0.95; // 5% lower tolerance
+                $max_amount = $order_total * 1.05; // 5% upper tolerance
+                if ($response->amount < $min_amount || $response->amount > $max_amount) {
                     if ($order) {
                         $this->handlePaymentFailed($order);
                     }
@@ -482,26 +480,18 @@ class WC_Kkiapay_Gateway extends WC_Payment_Gateway
             $currency = get_woocommerce_currency();
             $order_total = $order->get_total();
             
-            if ($currency === 'USD') {
-                $rate = $this->get_usd_to_xof_rate();
+            if ($currency !== 'XOF') {
+                $rate = $this->get_exchange_rate_to_xof($currency);
                 if ($rate) {
                     $order_total = $order_total * $rate;
                 }
             }
 
-            // Validate payment amount
-            $valid_payment = false;
-            if ($currency === 'USD') {
-                $min_amount = $order_total * 0.95;
-                $max_amount = $order_total * 1.05;
-                if ($response->amount >= $min_amount && $response->amount <= $max_amount) {
-                    $valid_payment = true;
-                }
-            } else {
-                if ($response->amount >= $order_total) {
-                    $valid_payment = true;
-                }
-            }
+            // Validate payment amount with 5% tolerance for exchange rate fluctuations
+            $min_amount = $order_total * 0.95; // 5% lower tolerance
+            $max_amount = $order_total * 1.05; // 5% upper tolerance
+            
+            $valid_payment = $response->amount >= $min_amount && $response->amount <= $max_amount;
 
             if ($valid_payment) {
                 $order->update_status('completed');
